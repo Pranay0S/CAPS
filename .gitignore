@@ -1,0 +1,12 @@
+# firmware build output
+firmware/build/
+
+# recorded sessions (CSV)
+logs/
+
+# node
+node_modules/
+
+# legacy python artefacts
+__pycache__/
+*.pyc

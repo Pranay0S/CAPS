@@ -1,924 +1,182 @@
-# IV Pump Simulator System Documentation
+# IV Pump Testbench: Design Notes
 
-## 1. Overview
+## 1. Purpose
 
-An **infusion pump**, commonly called an **IV pump**, is a medical device used to deliver fluids into a patient's body at a controlled rate. These fluids may include medications, nutrients, saline, antibiotics, pain medication, insulin, or other therapies.
+An infusion (IV) pump delivers fluid at a programmed rate. Its firmware closes a control loop on flow, watches line pressure for occlusions, and stops the motor and raises an alarm when something looks unsafe.
 
-Unlike a gravity-fed IV, an infusion pump allows a clinician to program a specific delivery rate and duration. The pump then regulates the delivery of fluid according to those programmed settings.
+This project recreates a **simplified** version of that firmware in embedded-style C and runs it in a virtual environment. The environment lets us:
 
-Real infusion pumps may monitor variables such as:
+- exercise the firmware with unit tests (GoogleTest / GMock),
+- inject cyber attacks on the sensor bus and in RAM, and see their **physical** effect,
+- record labelled CSV datasets (ground-truth attack vs. what the firmware detected) for anomaly-detection / TinyML work.
 
-- programmed flow rate
-- estimated or measured fluid delivery
-- pressure within the infusion line
-- remaining volume
-- occlusions or restrictions in tubing
-- air-in-line conditions
-- battery and hardware status
-
-The purpose of this project is **not to reproduce a clinical infusion pump**. Instead, it creates a software simulation that behaves like a simplified cyber-physical system.
-
-The simulator provides:
-
-- a virtual pump state
-- simulated flow and pressure measurements
-- adjustable pump settings
-- real-time sensor visualization
-- CSV data collection
-- simulated abnormal sensor behavior
-- a platform for future anomaly-detection and TinyML experiments
-
-The simulator is intended for research and educational use only.
+It is not a clinical device model.
 
 ---
 
-# 2. System Architecture
-
-The project is divided into a frontend and backend.
+## 2. Architecture
 
 ```text
-                User Interface
-                     |
-                     v
-             Frontend/main.py
-                     |
-                     v
-          Backend/pump_backend.py
-                     |
-           +---------+---------+
-           |                   |
-           v                   v
-    Pump Simulation        CSV Logger
-           |
-           v
-   Simulated Sensor Data
-           |
-           v
-     Future Detection
-          Layer
+┌──────────────────────────── ivpump_sim process ────────────────────────────┐
+│                                                                             │
+│  plant.c                attack.c                    firmware (fw/)          │
+│  ┌─────────────┐  frames ┌───────────────┐ frames  ┌──────────────────────┐ │
+│  │ motor + line│────────►│ adversary on  │────────►│ HAL ► pump.c         │ │
+│  │ sensors     │         │ sensor bus    │         │        ├ monitor.c   │ │
+│  │ (true state)│◄────────┤               │         │        ├ logger.c    │ │
+│  └─────────────┘  duty   └───────────────┘         │ cmd.c ◄┘             │ │
+│        ▲                                            └──────────┬───────────┘ │
+│        └────────────── motor duty (HAL set_motor_duty) ◄───────┘             │
+│                                                                             │
+│  sim.c: harness; ticks everything in lock-step, owns the line protocol     │
+│  main.c: stdin reader thread, fixed-period loop, stdout sink               │
+└─────────────────────────────────────────────────────────────────────────────┘
+          ▲ stdin: commands                     │ stdout: TLM / LOG / ACK / ERR
+          │                                     ▼
+       gui/server.js ── SSE ──► browser GUI   logs/session_*.csv
+          ▲
+          └── HTTP ── gui/inject.js (second terminal)
 ```
 
-The frontend is responsible for displaying information and accepting user input.
+### Layering rule
 
-The backend is responsible for maintaining the simulated pump state and generating sensor measurements.
-
-This separation makes it possible to modify the underlying pump behavior without redesigning the user interface.
+`firmware/src` + `firmware/include/fw` are the **firmware**. They only talk to the outside world through `hal_t` (function pointers) and never allocate memory, so the same code could be compiled for an MCU with a real HAL.
+Everything under `firmware/sim` is **test environment** and would not ship.
 
 ---
 
-# 3. Simulated Measurements
+## 3. Firmware
 
-The current simulator tracks three primary measurements.
+### 3.1 HAL (`fw/hal.h`)
 
-## 3.1 Flow Rate
+| Function | Real hardware analogue |
+|---|---|
+| `read_flow`, `read_pressure` | smart sensor on I²C/CAN; returns `{value, seq}` or `HAL_TIMEOUT` |
+| `set_motor_duty` | PWM to the pump motor driver (0..1) |
+| `set_alarm_output` | buzzer / alarm LED |
+| `millis` | system tick |
 
-Flow rate represents the rate at which fluid is being delivered.
+Each sensor frame carries a rolling **sequence counter** stamped by the sensor. The firmware uses it to reject stale or replayed frames.
 
-The target flow rate is selected by the user.
-
-Example:
-
-```text
-Target Flow Rate: 100 mL/hr
-Actual Flow Rate: 99.4 mL/hr
-```
-
-The simulator intentionally introduces small amounts of random variation into the actual flow measurement.
-
-This represents normal sensor variation and prevents the simulated data from being perfectly constant.
-
-Under normal operation:
+### 3.2 Pump state machine (`pump.c`)
 
 ```text
-Actual Flow Rate ≈ Target Flow Rate
+          start                VTBI reached
+  IDLE ───────────► RUNNING ───────────────► COMPLETE
+   ▲  ◄───────────  │  ▲  │                    │ vtbi <ml>
+   │     stop       │  │  │ pause / start      ▼
+   │   clear      ALARM  PAUSED               IDLE
+   └────────────────┘
 ```
 
-A small difference between the two values is expected.
+- `start` is refused in `ALARM` and `COMPLETE`. `stop` is refused in `ALARM` (clear it first).
+- Rate limits: 0.1–999 ml/h. VTBI: 0–9999 ml (0 = unlimited). Setting a VTBI resets the volume counter.
+
+### 3.3 Control loop
+
+Runs every period (default 100 ms):
+
+```text
+duty = target / 1200            (feed-forward from the nominal motor model)
+     + Kp · (target − flow_meas)
+     + Ki · ∫(target − flow_meas) dt   (clamped anti-windup)
+```
+
+On a missed sensor read the last duty is held. Volume is integrated from **measured** flow, so a spoofed sensor makes the pump's own volume estimate wrong too. The telemetry shows `volume_est` next to `volume_true` for that reason.
+
+### 3.4 Safety alarms
+
+Every alarm stops the motor and turns on the alarm output.
+
+| Alarm | Trigger |
+|---|---|
+| `OCCLUSION` | measured pressure > 40 kPa while running |
+| `SENSOR_TIMEOUT` | 5 consecutive missed reads while running |
+| `SENSOR_FAULT` | monitor anomaly while **IDS enforce** is on |
+| `MEM_CORRUPT` | setpoint fails its redundancy check (stored as value + bitwise complement). Clearing it resets the rate to the 0.1 ml/h minimum |
+
+### 3.5 Sensor plausibility monitor (`monitor.c`)
+
+This is a lightweight rule-based IDS. It returns a bitmask per sample:
+
+| Flag | Rule | Typically catches |
+|---|---|---|
+| `SEQ` | frame counter did not move forward | replay |
+| `ROC_FLOW` / `ROC_PRESS` | jump larger than 15 ml/h + 20 % of target, or 5 kPa | spike, noise |
+| `STUCK` | 8 identical flow readings while running | freeze |
+| `MISMATCH` | measured flow differs from `duty × 1200` by > 25 % for 15 samples | drift, slow tampering |
+| `DROPOUT` | a sensor did not answer | jamming |
+
+After a start or rate change, ROC and mismatch checks are suppressed for 20 samples (the settle window), so normal transients aren't flagged. An attack launched inside that window can therefore slip past the ROC check, which is a deliberate weakness worth studying.
+
+New flags are logged as `WARN` (`MON` module) on their rising edge.
+
+### 3.6 Logger (`logger.c`)
+
+- A fixed RAM ring of 64 × 192-byte lines. No `malloc`, no blocking.
+- `logger_event()` formats `LOG,<tick>,<LEVEL>,<MODULE>,<msg>`. Commas in text are replaced with `;` so every record is exactly one CSV row.
+- `logger_flush()` drains the ring to a sink, as a UART TX task would. On overflow, lines are dropped and a `ring overflow: N lines dropped` warning is emitted on the next flush.
+
+### 3.7 Console (`cmd.c`)
+
+The pump's text service port: `start pause stop clear status rate vtbi ids loglevel`. Arguments are strictly validated (`rate 12abc`, `rate nan` and extra arguments are all rejected).
 
 ---
 
-## 3.2 Pressure
+## 4. Test environment (`firmware/sim`)
 
-Pressure represents the simulated pressure within the infusion line.
+### 4.1 Plant model (`plant.c`)
 
-Pressure can be useful for detecting conditions such as:
+- **Flow:** first-order lag (τ = 0.4 s) toward `duty × 1200 × (1 − 0.95·occlusion)` ml/h.
+- **Pressure:** `8 + 0.02·flow + 60·occlusion` kPa.
+- **Occlusion fault:** ramps from 0 to 1 over 3 s when injected, and decays when removed.
+- **Sensors:** Gaussian noise (σ = 0.8 ml/h, 0.3 kPa) and a shared incrementing frame counter.
+- A seeded xorshift PRNG makes every run reproducible.
 
-- blocked tubing
-- restricted flow
-- occlusion
-- abnormal pump behavior
+### 4.2 Attacker (`attack.c`)
 
-The current project uses simulated pressure values rather than attempting to reproduce a specific commercial pump's pressure units or calibration.
+A man-in-the-middle on the sensor bus. It records every genuine frame, then modifies the frames before the firmware reads them.
 
-Normal pressure values should remain within a relatively stable range.
+| Attack | Effect on frames | Physical consequence (IDS off) |
+|---|---|---|
+| SPIKE | +mag flow, +0.3·mag pressure for N samples | controller cuts duty → **under-infusion**; large spikes can spoof an occlusion alarm |
+| DRIFT | bias grows each sample | slow, sustained under-infusion; pressure bias eventually trips a false occlusion |
+| REPLAY | loops an old window, including the old `seq` | controller acts on stale data |
+| FREEZE | constant value, fresh `seq` | controller blind to real changes |
+| DROPOUT | frames swallowed | `SENSOR_TIMEOUT` alarm (denial of therapy) |
+| NOISE | heavy Gaussian noise | erratic duty |
+| TAMPER | harness writes `pump.target_rate` directly | `MEM_CORRUPT` alarm on next cycle |
 
-Abnormal conditions may cause rapid or gradual pressure changes.
+### 4.3 Harness (`sim.c`) and process (`main.c`)
 
----
-
-## 3.3 Volume Infused
-
-Volume infused represents the approximate amount of fluid delivered since the pump began operating.
-
-The simulator calculates volume from the measured flow rate.
-
-Conceptually:
-
-```text
-Volume = Flow Rate × Time
-```
-
-Because the flow rate is expressed in mL/hr, it is first converted into mL/s.
-
-```text
-flow_per_second = flow_rate / 3600
-```
-
-The simulator then adds the delivered volume during each update cycle.
+Each tick runs `plant_step → plant_sample → attack_apply → pump_step → emit TLM → flush log`.
+`main.c` runs the tick on a wall-clock period (or `--fast`) and feeds stdin commands through a mutex-protected queue from a reader thread. Lines of the form `@<tick_ms> cmd` are scheduled for scripted runs.
 
 ---
 
-# 4. Main Dashboard
+## 5. Line protocol
 
-The primary dashboard provides the operator with a real-time view of the simulated system.
+| Prefix | Fields |
+|---|---|
+| `#TLM` | column names (sent once with `--header`) |
+| `TLM` | `tick_ms,state,alarm,target_rate,flow_meas,flow_true,pressure_meas,pressure_true,volume_est,volume_true,vtbi,duty,anomaly,attack` |
+| `LOG` | `tick_ms,level,module,message` (module `SIM` = ground-truth harness events) |
+| `ACK` / `ERR` | `tick_ms,verb,message` |
 
-The intended layout is:
-
-```text
-+------------------------------------------------------------------+
-| IV PUMP SIMULATOR | Cyber-Physical Security & Sensor Monitoring  |
-+------------------------------------------------------------------+
-
-   START        STOP                         ALARM STATUS: NORMAL
-
-
-   +--------------------------------------+  +--------------------+
-   |                                      |  | TARGET FLOW RATE   |
-   |         LIVE SENSOR GRAPH            |  | 100 mL/hr          |
-   |                                      |  |                    |
-   |                                      |  | ACTUAL FLOW        |
-   |                                      |  | 99.4 mL/hr         |
-   |                                      |  |                    |
-   |                                      |  | PRESSURE           |
-   |                                      |  | 10.1               |
-   |                                      |  |                    |
-   |                                      |  | VOLUME             |
-   +--------------------------------------+  | 4.24 mL            |
-                                             +--------------------+
-
-                     SYSTEM STATE
-
-                       RUNNING
-```
+`gui/lib/protocol.js` parses these lines. `gui/lib/session.js` adds a host timestamp and writes them to CSV.
 
 ---
 
-# 5. Dashboard Components
+## 6. GUI and recording (`gui/`)
 
-## 5.1 Header
-
-The top banner identifies the application.
-
-Example:
-
-```text
-IV PUMP SIMULATOR | Cyber-Physical Security & Sensor Monitoring
-```
-
-The header should remain visible while using the main dashboard.
-
-A settings icon should appear on the right side of the header.
-
-Selecting the settings icon opens the attack simulation page.
+- `server.js` uses only Node built-ins. It spawns `ivpump_sim`, streams parsed records to browsers over Server-Sent Events, forwards `POST /api/cmd` to the sim's stdin, and records every record, including the commands themselves (`CMD`, tagged `gui` or `cli`).
+- CSV export endpoints: `/api/export/telemetry.csv`, `/api/export/events.csv`, `/api/export/all.csv`. Files are also appended live under `logs/`.
+- `inject.js` is the secondary terminal. It uses the same HTTP API, subscribes to the same event stream, and prints ACK/ERR and warnings as they happen.
 
 ---
 
-# 5.2 Start Button
-
-The **START** button changes the pump state from:
-
-```text
-STOPPED
-```
-
-to:
-
-```text
-RUNNING
-```
-
-Before starting, the simulator should confirm that the programmed target flow rate is valid.
-
-### Normal behavior
-
-When START is pressed:
-
-1. The pump enters the `RUNNING` state.
-2. Flow measurements begin approaching the selected target.
-3. Pressure measurements begin updating.
-4. Volume infused begins increasing.
-5. Sensor values continue being written to the CSV file.
-6. The live graph begins displaying the measurements.
-
-### Possible failure cases
-
-The pump should not start if:
-
-- the target flow field is empty
-- the value is not numeric
-- the flow rate is zero
-- the flow rate is negative
-
-The interface should display an error instead of allowing invalid input.
-
----
-
-# 5.3 Stop Button
-
-The **STOP** button places the simulated pump into the `STOPPED` state.
-
-### Expected behavior
-
-When STOP is pressed:
-
-```text
-State = STOPPED
-Actual Flow Rate = 0
-```
-
-The previously infused volume should remain stored rather than returning to zero.
-
-Pressure may continue displaying a simulated baseline reading.
-
-CSV logging may continue so that the transition between running and stopped states is captured.
-
----
-
-# 5.4 Alarm Status
-
-The alarm display communicates whether the simulated system has identified a fault condition.
-
-Example normal display:
-
-```text
-● NORMAL
-```
-
-Example abnormal display:
-
-```text
-● ALARM
-```
-
-or:
-
-```text
-● SENSOR ANOMALY
-```
-
-Normal status should be visually distinct from an abnormal status.
-
-For example:
-
-```text
-Green = normal
-Red   = alarm
-```
-
-The alarm field should eventually represent the output of the detection system rather than simply indicate that an attack button was pressed.
-
-This distinction is important.
-
-The attack simulator represents what is happening to the sensor data.
-
-The alarm system represents whether the defense system successfully detected the abnormal behavior.
-
----
-
-# 5.5 Target Flow Rate
-
-The target flow rate represents the programmed pump setting.
-
-Example:
-
-```text
-100 mL/hr
-```
-
-The user should be able to modify this value.
-
-A **SET** button can be used to apply a new target.
-
-### Normal scenario
-
-If the operator changes:
-
-```text
-100 mL/hr
-```
-
-to:
-
-```text
-120 mL/hr
-```
-
-the actual simulated flow should gradually or immediately move toward the new value depending on the simulation model.
-
-### Possible future improvement
-
-Instead of changing immediately, the simulator could model pump response time.
-
-For example:
-
-```text
-100
-104
-109
-114
-118
-120
-```
-
-This would create more realistic time-series data.
-
----
-
-# 5.6 Actual Flow Rate
-
-Actual flow represents the simulated sensor measurement.
-
-During normal operation:
-
-```text
-Target = 100 mL/hr
-Actual ≈ 98.5 - 101.5 mL/hr
-```
-
-Small random variations are intentionally included.
-
-Large changes may represent:
-
-- a simulated sensor attack
-- an occlusion
-- incorrect data
-- a hardware fault
-
----
-
-# 5.7 Pressure
-
-The pressure display represents a second sensor channel.
-
-Under normal operation the value should remain relatively stable.
-
-The pressure signal is useful because comparing multiple sensor channels can make anomaly detection more reliable.
-
-For example:
-
-```text
-Flow suddenly decreases
-Pressure suddenly increases
-```
-
-could be consistent with an occlusion-type condition.
-
-However:
-
-```text
-Flow suddenly increases
-Pressure remains completely unchanged
-```
-
-may indicate corrupted or manipulated sensor data depending on the model.
-
----
-
-# 5.8 Volume Infused
-
-Volume infused accumulates while the pump is running.
-
-Example:
-
-```text
-0.000 mL
-0.014 mL
-0.028 mL
-0.042 mL
-...
-```
-
-When the pump stops, the volume should stop increasing.
-
-The value should not reset unless a separate reset operation is explicitly implemented.
-
----
-
-# 5.9 Live Sensor Graph
-
-The live graph visualizes changes in sensor measurements over time.
-
-The graph is intended to make abnormal behavior easy to identify visually.
-
-Possible signals include:
-
-- flow rate
-- pressure
-- volume
-- future anomaly score
-
-The graph should maintain only a recent time window instead of displaying every measurement recorded since the program started.
-
-For example:
-
-```text
-Last 50 samples
-```
-
-or:
-
-```text
-Last 30 seconds
-```
-
-This keeps the graph readable and reduces rendering overhead.
-
-A future version may allow the operator to choose which signal is shown:
-
-```text
-Display:
-[ Flow Rate v ]
-```
-
-with options such as:
-
-```text
-Flow Rate
-Pressure
-Volume
-Anomaly Score
-```
-
----
-
-# 5.10 System State
-
-The state display appears below the graph.
-
-Possible states currently include:
-
-```text
-STOPPED
-RUNNING
-```
-
-Future states may include:
-
-```text
-ALARM
-FAULT
-PAUSED
-SAFE MODE
-```
-
-The state represents the operating condition of the simulated pump.
-
-The state should be treated separately from the alarm.
-
-For example:
-
-```text
-State: RUNNING
-Alarm: NORMAL
-```
-
-is normal operation.
-
-A future defense system might produce:
-
-```text
-State: SAFE MODE
-Alarm: SENSOR ATTACK DETECTED
-```
-
----
-
-# 6. Settings / Attack Simulation Page
-
-The settings icon opens a separate page used for cybersecurity testing.
-
-This page includes simulated attacks that modify sensor data.
-
-The current planned attacks are:
-
-- spike
-- drift
-- replay
-
-These attacks should only affect the software simulation and are intended to generate abnormal data for detection experiments.
-
----
-
-# 7. Spike Injection
-
-A spike represents a sudden and unusually large change in a sensor measurement.
-
-Example normal signal:
-
-```text
-99.5
-100.2
-99.8
-100.4
-```
-
-Spike:
-
-```text
-174.2
-```
-
-then:
-
-```text
-100.1
-99.7
-```
-
-Graphically:
-
-```text
-          /\
----------/  \---------
-```
-
-### Purpose
-
-Spike attacks are useful for testing whether a detection algorithm can identify obvious short-duration anomalies.
-
-### Ideal detector response
-
-A detection system should recognize that the rapid change is inconsistent with recent measurements.
-
-Possible result:
-
-```text
-ALARM STATUS:
-ANOMALY DETECTED
-```
-
-### Possible detection problem
-
-A poorly designed detector may mistake legitimate transient noise for a malicious spike.
-
-This creates a **false positive**.
-
----
-
-# 8. Drift Injection
-
-Drift represents a gradual change in sensor data.
-
-Example:
-
-```text
-100.0
-100.5
-101.0
-101.6
-102.2
-103.0
-104.1
-```
-
-Unlike a spike, no individual measurement may appear extremely abnormal.
-
-Graphically:
-
-```text
-              /
-            /
-          /
-        /
-------/
-```
-
-### Purpose
-
-Drift is more difficult to detect because measurements change slowly.
-
-Simple threshold systems may fail if every individual sample remains inside the allowed range.
-
-### Ideal detector response
-
-The detection system should recognize that the signal's long-term behavior has changed even if each individual reading appears plausible.
-
-### Expected challenge
-
-Drift detection may require:
-
-- historical measurements
-- moving averages
-- rate-of-change calculations
-- sequence-based models
-- machine-learning models
-
----
-
-# 9. Replay Injection
-
-A replay attack uses previously valid sensor measurements and presents them as if they were current measurements.
-
-Example:
-
-The pump previously recorded:
-
-```text
-99.8
-100.1
-100.0
-99.7
-```
-
-During a replay attack, these old values may be repeatedly supplied even though the real simulated system has changed.
-
-### Why replay attacks are interesting
-
-The measurements themselves may appear completely normal.
-
-Unlike a spike:
-
-```text
-200 mL/hr
-```
-
-a replay sample might be:
-
-```text
-99.9 mL/hr
-```
-
-which appears reasonable.
-
-The abnormal behavior is related to the timing and repetition of the measurements rather than their magnitude.
-
-### Ideal detector response
-
-A stronger detection system may recognize:
-
-- repeated sequences
-- lack of expected variation
-- inconsistent relationships between sensors
-- timestamps that do not match
-- disagreement between physical state and reported sensor values
-
-Replay detection is therefore useful for demonstrating why simple threshold-based security is often insufficient.
-
----
-
-# 10. Normal Operating Scenario
-
-A normal test may follow this sequence:
-
-```text
-1. Application starts.
-2. State displays STOPPED.
-3. Operator enters 100 mL/hr.
-4. Operator presses START.
-5. State changes to RUNNING.
-6. Actual flow stabilizes near 100 mL/hr.
-7. Pressure remains near baseline.
-8. Volume gradually increases.
-9. Graph displays small natural fluctuations.
-10. Alarm remains NORMAL.
-```
-
-The CSV should contain values similar to:
-
-```text
-timestamp,target_flow_rate,actual_flow_rate,pressure,volume_infused,state,alarm,attack
-12:00:00,100,99.4,10.2,0.0138,RUNNING,NONE,NONE
-12:00:01,100,100.5,9.9,0.0278,RUNNING,NONE,NONE
-12:00:02,100,99.8,10.1,0.0417,RUNNING,NONE,NONE
-```
-
----
-
-# 11. Example Attack Scenario
-
-A simulated spike test may behave as follows:
-
-```text
-Target Flow: 100 mL/hr
-
-Normal:
-99.8
-100.3
-99.5
-100.1
-
-Attack begins:
-172.4
-181.7
-164.8
-
-Attack ends:
-100.4
-99.9
-```
-
-The graph should clearly show the abnormal region.
-
-The CSV should record the attack label:
-
-```text
-SPIKE
-```
-
-This allows the collected dataset to later be used for training and testing anomaly-detection models.
-
----
-
-# 12. Expected Failure Modes
-
-Several software and simulation failures should be considered during development.
-
-## Invalid User Input
-
-Example:
-
-```text
-Target Flow = abc
-```
-
-Expected response:
-
-```text
-Error: Enter a valid positive flow rate.
-```
-
-The application should remain running.
-
----
-
-## Backend / Frontend Key Mismatch
-
-The frontend expects dictionary fields such as:
-
-```python
-actual_flow_rate
-pressure
-volume_infused
-state
-alarm
-```
-
-If the backend changes these names without updating the frontend, Python may generate a `KeyError`.
-
-Frontend and backend interfaces should therefore remain consistent.
-
----
-
-## CSV File Problems
-
-Possible issues include:
-
-- CSV file is open in another application
-- directory is read-only
-- storage is unavailable
-- file path is invalid
-
-Logging errors should eventually be handled so that a CSV failure does not necessarily crash the entire simulator.
-
----
-
-## Graph Rendering Delay
-
-The graph may appear slow or unresponsive if it is completely redrawn too frequently.
-
-Matplotlib is designed primarily for scientific plotting rather than high-speed GUI visualization.
-
-Repeated operations such as:
-
-```python
-axis.relim()
-axis.autoscale_view()
-canvas.draw()
-```
-
-can become expensive when performed many times per second.
-
-The graphical refresh rate should therefore be separated from the sensor sampling rate.
-
-For example:
-
-```text
-Sensor sampling: 10 Hz
-CSV logging:     10 Hz
-Graph refresh:    5 Hz
-```
-
-The backend can collect sensor measurements faster than the interface draws them.
-
----
-
-# 13. Sensor Sampling vs Display Refresh
-
-It is important to separate three concepts:
-
-```text
-Sensor sampling rate
-Data logging rate
-Display refresh rate
-```
-
-They do not need to be identical.
-
-A real system may collect sensor measurements rapidly while updating the visual interface more slowly.
-
-For this simulator, a reasonable architecture would be:
-
-```text
-Sensor Simulation
-        |
-        | 100 ms
-        v
-     10 samples/s
-        |
-        +-----------------> CSV
-        |
-        v
-   graph refresh
-      200 ms
-     5 frames/s
-```
-
-This provides enough data for anomaly-detection experiments without forcing Matplotlib to redraw unnecessarily often.
-
----
-
-# 14. Future Detection Layer
-
-The final project architecture is expected to include a detection layer between sensor generation and trusted pump logic.
-
-```text
-Simulated Physical System
-          |
-          v
-      Sensor Data
-          |
-          v
-+-----------------------+
-|  Anomaly Detection    |
-|                       |
-| Rules / ML / TinyML   |
-+-----------+-----------+
-            |
-      +-----+-----+
-      |           |
-    SAFE        UNSAFE
-      |           |
-      v           v
- Pump Logic     Alarm /
- Continues      Safe State
-```
-
-The detector may analyze combinations of:
-
-```text
-flow
-pressure
-volume
-rate of change
-historical measurements
-relationships between sensors
-```
-
-The spike, drift, and replay simulations provide different anomaly classes that can be used to evaluate the detector.
-
----
-
-# 15. Project Scope
-
-This project is an educational cyber-physical system simulation.
-
-It does **not** implement:
-
-- clinical medication delivery
-- validated medical-device control
-- patient-specific dosing
-- medical safety limits
-- certified alarm logic
-- real infusion hardware
-
-It should not be used to control or interface with a real medical device.
-
-The project instead provides a controlled environment for studying:
-
-- embedded-system concepts
-- sensor data
-- cyber-physical attacks
-- anomaly detection
-- state-machine behavior
-- data collection
-- machine-learning-based defenses
+## 7. Extending
+
+- **New attack:** add an `attack_type_t` value, a name, defaults, and a `case` in `attack_apply()`, plus an `AttackTest` and a `SimTest` showing whether the monitor catches it.
+- **New detector:** add an `ANOM_*` bit and a rule in `monitor_check()`. It appears automatically in the `anomaly` CSV column.
+- **ML model in the loop:** the telemetry CSV is the training set (`attack` as label). An on-device model could replace or augment `monitor_check()` behind the same interface.

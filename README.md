@@ -1,440 +1,158 @@
-# CAPS IV Pump Simulator
+# CAPS IV Pump Testbench
 
-A Python-based virtual IV pump simulator for the ESE 534 Cyber-Physical Systems project.
+A virtual test environment for IV-pump firmware, built for the ESE 534 Cyber-Physical Systems project.
 
-The application simulates a simplified infusion pump with:
+- **`firmware/`**: embedded-style C11 firmware (state machine, closed-loop flow control, safety alarms, sensor plausibility monitor, ring-buffered logger), running against a simulated plant and an attacker on the sensor bus. It is unit-tested with **GoogleTest / GMock**.
+- **`gui/`**: a dependency-free **Node.js** server plus browser GUI. It runs the firmware simulator, charts it live, records every log line to **CSV**, and provides an **attack terminal** in the page. A standalone attack console, `inject.js`, runs in a second OS terminal.
 
-- adjustable target flow rate
-- simulated flow and pressure measurements
-- infused volume tracking
-- live sensor visualization
-- CSV data logging
-- pump state monitoring
-- simulated sensor attack injection
-- a foundation for future anomaly detection and TinyML integration
-
-The project is intended for **educational and research purposes only**. It is not designed to control or interact with a real medical device.
-
----
-
-## Project Overview
-
-The simulator is divided into two main components:
+> Educational/research use only. This is not a medical device and must not be used to control one.
 
 ```text
-Frontend
-    |
-    v
-Backend
-    |
-    +--> Sensor Simulation
-    |
-    +--> CSV Logging
-    |
-    +--> Attack Simulation
+ browser GUI ──SSE/HTTP──┐                    ┌── stdin:  commands / attacks
+                         ├── gui/server.js ───┤
+ node gui/inject.js ─HTTP┘     │              └── stdout: TLM / LOG / ACK / ERR lines
+   (2nd terminal)              │                        │
+                               ▼                        ▼
+                     logs/session_*.csv        firmware/build/ivpump_sim
+                                                 ┌──────────────────────────┐
+                                                 │ plant ─► attacker ─► HAL │
+                                                 │            (sensor bus)  │
+                                                 │        firmware (fw/)    │
+                                                 └──────────────────────────┘
 ```
-
-The frontend provides the graphical interface using Tkinter.
-
-The backend manages:
-
-- pump state
-- sensor values
-- attack injection
-- volume calculations
-- CSV data collection
-
-The goal is to create a controlled cyber-physical system environment where normal and abnormal sensor behavior can be generated and later analyzed using an anomaly-detection model.
 
 ---
 
-## Project Structure
+## Prerequisites
+
+| Tool | Tested with | Notes |
+|---|---|---|
+| C/C++ compiler | GCC 14 (MSYS2 UCRT64) | any C11 / C++17 compiler |
+| CMake + Ninja | 3.31 / 1.12 | |
+| GoogleTest/GMock | 1.15 | uses the system package; otherwise CMake downloads it automatically |
+| Node.js | 23.5 | 18 or newer; **no npm install needed** |
+
+On Windows with MSYS2:
+
+```sh
+pacman -S mingw-w64-ucrt-x86_64-{gcc,cmake,ninja,gtest,nodejs}
+```
+
+## Quick start
+
+```sh
+# 1. build firmware simulator + tests
+cmake -S firmware -B firmware/build -G Ninja
+cmake --build firmware/build
+
+# 2. run the unit tests
+ctest --test-dir firmware/build --output-on-failure
+
+# 3. start the GUI (spawns the simulator)
+node gui/server.js            # → http://127.0.0.1:8534
+
+# 4. (optional) attack console in a second terminal
+node gui/inject.js
+```
+
+VS Code users can run the **build**, **test**, **gui** and **inject** tasks from `.vscode/tasks.json`.
+
+## Using the GUI
+
+| Area | What it does |
+|---|---|
+| Status strip | Pump state, alarm, **attack ground truth** (what the attacker is doing) and **monitor flags** (what the firmware detected) |
+| Tiles | Target rate, measured vs **true** flow, pressure, estimated vs true volume, motor duty |
+| Charts | Last 60 s of flow and pressure. Shaded bands mark active attacks; hover for values |
+| Pump console | Start/pause/stop/clear, rate, VTBI, IDS enforce, occlusion fault |
+| Event log | Every firmware/harness log line, command, ACK/ERR, filterable by level |
+| Attack terminal | Type commands (`help`, Tab-complete, ↑/↓ history) or use the quick-attack chips |
+| **Telemetry / Events / All logs CSV** | Download the current session as CSV |
+
+Every session is also written to `logs/` as it runs (`session_<timestamp>_telemetry.csv` and `session_<timestamp>_events.csv`), so nothing is lost if the browser closes. **Restart sim** starts a new session.
+
+## Attack terminal / `inject.js`
+
+Both terminals send the same commands. `inject.js` also works one-shot, which makes it easy to script:
+
+```sh
+node gui/inject.js                     # interactive, shows live ACK/ERR/WARN
+node gui/inject.js attack spike 80 10  # one-shot
+```
+
+| Command | Effect |
+|---|---|
+| `attack spike [mag=60] [samples=6]` | transient added to flow (and 0.3× to pressure) |
+| `attack drift [rate=0.4] [samples]` | bias that grows by `rate` ml/h every sample (stealthy) |
+| `attack replay [window=50] [samples]` | loops recorded genuine frames, including their old sequence numbers |
+| `attack freeze [-] [samples]` | holds the last reading; frame counter keeps moving |
+| `attack dropout [-] [samples]` | swallows frames (jamming / DoS) |
+| `attack noise [sigma=25] [samples]` | heavy Gaussian noise |
+| `attack tamper <rate>` | overwrites the setpoint in firmware RAM, bypassing the API |
+| `attack clear` | stops the active attack |
+| `fault occlusion on\|off` | physical downstream occlusion (a fault, not an attack) |
+| `start` `pause` `stop` `clear` `status` | pump console |
+| `rate <ml/h>` `vtbi <ml>` | programming (0.1–999 ml/h; VTBI 0 = unlimited) |
+| `ids on\|off` | **off** (default): anomalies are logged only. **on**: anomalies raise `SENSOR_FAULT` and stop the pump |
+| `loglevel debug\|info\|warn\|error` | firmware log verbosity |
+
+Omitting `samples` means the attack runs until `attack clear`.
+
+## CSV formats
+
+**Telemetry**: one row per 100 ms control period. This is the dataset for anomaly detection / TinyML:
+
+```
+host_time,tick_ms,state,alarm,target_rate,flow_meas,flow_true,pressure_meas,pressure_true,
+volume_est,volume_true,vtbi,duty,anomaly,attack
+```
+
+- `*_meas` is what the firmware saw (post-attack). `*_true` is the plant's real value.
+- `attack` is the ground-truth label. `anomaly` holds the firmware monitor's flags (`ROC_FLOW|SEQ|...` or `NONE`).
+
+**Events**: `host_time,tick_ms,type,level,module,message`. `type` is one of `LOG`, `ACK`, `ERR`, `CMD` (with `module` = `gui`/`cli`) or `SYS`.
+
+**All logs**: both of the above merged into one file in arrival order, with a `record_type` column.
+
+## Headless / scripted runs
+
+The simulator is a normal CLI. Commands prefixed with `@<tick_ms>` are scheduled, so datasets are reproducible by seed:
+
+```sh
+printf '@0 start\n@5000 attack spike\n@20000 attack drift\n@40000 attack clear\n' \
+  | firmware/build/ivpump_sim --fast --ticks 600 --seed 42 --header > run.log
+```
+
+## Tests
+
+```sh
+ctest --test-dir firmware/build --output-on-failure   # 66 C/C++ tests
+cd gui && node --test                                  # protocol / CSV tests
+```
+
+| Suite | Covers |
+|---|---|
+| `LoggerTest` | CSV record format, comma sanitising, level filter, ring overflow reporting |
+| `MonitorTest` | sequence/replay check, rate-of-change, stuck sensor, model mismatch, settle window |
+| `PumpTest` (GMock HAL) | state machine, feed-forward + PI control, occlusion / timeout / VTBI / IDS / RAM-tamper alarms |
+| `CmdTest` | console parser, argument validation |
+| `AttackTest` | each attack's effect on sensor frames |
+| `SimTest` | closed loop with no mocks: convergence, each attack detected, determinism by seed |
+
+## Repository layout
 
 ```text
-CAPS/
-│
-├── Backend/
-│   ├── __init__.py
-│   └── pump_backend.py
-│
-├── Frontend/
-│   ├── __init__.py
-│   └── main.py
-│
-├── docs/
-│   └── iv_pump_system.md
-│
-├── run.py
-├── README.md
-└── IVP_Data.csv
+firmware/
+  include/fw/      firmware headers: hal, pump, monitor, logger, cmd, fw_config
+  src/             firmware sources (portable C11, no malloc)
+  sim/             test environment: plant model, attacker, harness, main()
+  tests/           GoogleTest / GMock suites
+gui/
+  server.js        spawns the sim, SSE stream, CSV recording/export
+  inject.js        standalone attack console (second terminal)
+  lib/             line-protocol parser, session/CSV writer
+  public/          browser GUI (vanilla JS, canvas charts)
+docs/iv_pump_sys.md   design notes
 ```
 
-### `Backend/pump_backend.py`
-
-Contains the simulated pump logic, including:
-
-- flow generation
-- pressure generation
-- pump state
-- volume calculation
-- CSV logging
-- spike attack simulation
-- drift attack simulation
-- replay attack simulation
-
-### `Frontend/main.py`
-
-Contains the graphical user interface, including:
-
-- live sensor graph
-- start and stop controls
-- flow-rate input
-- alarm display
-- system state display
-- settings page
-- attack injection controls
-
-### `docs/`
-
-Contains additional technical documentation describing the simulated IV pump, dashboard behavior, expected operating scenarios, and fault conditions.
-
-### `run.py`
-
-Main entry point for the application.
-
----
-
-# Requirements
-
-The project requires:
-
-- Python 3.10 or newer
-- Tkinter
-- Matplotlib
-
-Most Python installations already include Tkinter.
-
----
-
-# Installation
-
-## 1. Clone the Repository
-
-```bash
-git clone <repository-url>
-```
-
-Move into the project folder:
-
-```bash
-cd CAPS
-```
-
----
-
-## 2. Check Python Installation
-
-Verify that Python is installed:
-
-```bash
-python --version
-```
-
-On some systems:
-
-```bash
-python3 --version
-```
-
-The project is recommended to run with Python 3.10 or newer.
-
----
-
-## 3. Install Dependencies
-
-Install Matplotlib:
-
-```bash
-pip install matplotlib
-```
-
-If `pip` is associated with a different Python installation, use:
-
-```bash
-python -m pip install matplotlib
-```
-
-or:
-
-```bash
-python3 -m pip install matplotlib
-```
-
----
-
-## 4. Tkinter
-
-Tkinter is included with most standard Windows Python installations.
-
-You can test whether Tkinter is installed with:
-
-```bash
-python -m tkinter
-```
-
-A small Tkinter test window should open.
-
-If it does, no additional installation is required.
-
----
-
-# Running the Simulator
-
-From the top-level `CAPS` directory, run:
-
-```bash
-python run.py
-```
-
-On some systems:
-
-```bash
-python3 run.py
-```
-
-Do not normally run `Frontend/main.py` or `Backend/pump_backend.py` directly.
-
-The application should be launched through:
-
-```text
-run.py
-```
-
----
-
-# Application Startup
-
-When the program launches, the main dashboard displays:
-
-- pump controls
-- alarm status
-- live sensor graph
-- target flow rate
-- actual flow rate
-- pressure
-- volume infused
-- current pump state
-
-The pump initially starts in:
-
-```text
-STOPPED
-```
-
-Enter a target flow rate and press:
-
-```text
-START
-```
-
-to begin the simulation.
-
-Press:
-
-```text
-STOP
-```
-
-to stop the simulated pump.
-
----
-
-# Settings and Attack Simulation
-
-The settings icon opens the attack simulation page.
-
-The current simulator supports:
-
-### Spike
-
-Creates a sudden abnormal increase in sensor measurements.
-
-### Drift
-
-Gradually shifts sensor measurements away from their expected values.
-
-### Replay
-
-Uses previously collected sensor measurements in place of current data.
-
-These simulations are intended to generate abnormal time-series data for future cybersecurity and anomaly-detection experiments.
-
----
-
-# Data Collection
-
-The simulator automatically creates:
-
-```text
-IVP_Data.csv
-```
-
-The CSV contains values such as:
-
-```text
-timestamp
-target_flow_rate
-actual_flow_rate
-pressure
-volume_infused
-state
-alarm
-attack
-```
-
-Example:
-
-```csv
-timestamp,target_flow_rate,actual_flow_rate,pressure,volume_infused,state,alarm,attack
-2026-10-04T14:30:01,100.0,99.62,10.21,0.0138,RUNNING,NONE,NONE
-2026-10-04T14:30:02,100.0,100.34,9.88,0.0277,RUNNING,NONE,NONE
-2026-10-04T14:30:03,100.0,172.50,28.34,0.0516,RUNNING,NONE,SPIKE
-```
-
-The collected data can later be used for:
-
-- signal analysis
-- attack classification
-- anomaly detection
-- machine-learning training
-- TinyML experiments
-
----
-
-# Current Architecture
-
-```text
-User
- |
- v
-Tkinter Dashboard
- |
- v
-IVPumpSimulator
- |
- +---------------------+
- |                     |
- v                     v
-Sensor Simulation    CSV Logger
- |
- v
-Attack Injection
- |
- v
-Future Detection Layer
-```
-
-A future version of the project is intended to add an anomaly-detection layer between the simulated sensors and trusted pump logic.
-
----
-
-# Future Development
-
-Planned improvements include:
-
-- faster sensor sampling
-- independent graph refresh rate
-- anomaly scoring
-- rule-based detection
-- TinyML model integration
-- attack detection alerts
-- additional simulated faults
-- improved graph controls
-- selectable graph signals
-- safe-state behavior
-
----
-
-# Troubleshooting
-
-## `ModuleNotFoundError`
-
-Make sure you are running the program from the top-level project directory:
-
-```bash
-python run.py
-```
-
-The folder structure should remain:
-
-```text
-CAPS/
-├── Backend/
-├── Frontend/
-└── run.py
-```
-
----
-
-## Matplotlib Not Found
-
-If you receive:
-
-```text
-ModuleNotFoundError: No module named 'matplotlib'
-```
-
-install it with:
-
-```bash
-python -m pip install matplotlib
-```
-
----
-
-## Tkinter Not Found
-
-Test Tkinter with:
-
-```bash
-python -m tkinter
-```
-
-If a window does not open, your Python installation may not include Tkinter.
-
----
-
-## CSV File Not Updating
-
-Check that:
-
-- the project folder is writable
-- `IVP_Data.csv` is not locked by another program
-- the simulator is running
-- the pump has been started
-
----
-
-# Safety Notice
-
-This project is a software simulation created for coursework and research.
-
-It is **not a medical device** and should not be used to:
-
-- control a real infusion pump
-- deliver medication
-- determine medical dosing
-- monitor patients
-- make clinical decisions
-
-All sensor values, alarms, faults, and attack behaviors are simulated.
-
----
-
-# Course
-
-**ESE 534 — Cyber-Physical Systems**
-
-Project focus:
-
-**Cyber-physical security and anomaly detection in a simulated IV pump system.**
+See [docs/iv_pump_sys.md](docs/iv_pump_sys.md) for the design details.

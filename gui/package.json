@@ -1,0 +1,15 @@
+{
+  "name": "caps-ivpump-gui",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Browser GUI, CSV logger and attack console for the virtual IV pump firmware",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "start": "node server.js",
+    "inject": "node inject.js",
+    "test": "node --test"
+  }
+}

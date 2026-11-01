@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CAPS IV Pump Testbench</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <span class="brand-mark" aria-hidden="true"></span>
+    <div>
+      <h1>IV Pump Testbench</h1>
+      <p class="sub">ESE 534 · virtual firmware <span id="session-id">—</span></p>
+    </div>
+  </div>
+  <div class="topbar-actions">
+    <span id="conn" class="pill pill-muted"><span class="dot"></span><span>connecting</span></span>
+    <div class="btn-group" role="group" aria-label="Export CSV">
+      <a class="btn" href="/api/export/telemetry.csv" download>Telemetry CSV</a>
+      <a class="btn" href="/api/export/events.csv" download>Events CSV</a>
+      <a class="btn" href="/api/export/all.csv" download>All logs CSV</a>
+    </div>
+    <button id="restart" class="btn btn-ghost" title="Kill the simulator and start a new recording session">Restart sim</button>
+  </div>
+</header>
+
+<main class="layout">
+
+  <section class="status-strip" aria-label="Pump status">
+    <div class="status-item"><span class="label">State</span><span id="st-state" class="badge">—</span></div>
+    <div class="status-item"><span class="label">Alarm</span><span id="st-alarm" class="badge">—</span></div>
+    <div class="status-item"><span class="label">Attack (ground truth)</span><span id="st-attack" class="badge">—</span></div>
+    <div class="status-item"><span class="label">Monitor flags</span><span id="st-anomaly" class="badge">—</span></div>
+    <div class="status-item"><span class="label">Sim time</span><span id="st-time" class="mono">—</span></div>
+  </section>
+
+  <section class="tiles" aria-label="Live readings">
+    <div class="tile"><span class="label">Target rate</span><span class="value"><b id="t-target">—</b><small>ml/h</small></span></div>
+    <div class="tile"><span class="label">Flow · measured</span><span class="value"><b id="t-flow">—</b><small>ml/h</small></span></div>
+    <div class="tile"><span class="label">Flow · true</span><span class="value"><b id="t-flow-true">—</b><small>ml/h</small></span></div>
+    <div class="tile"><span class="label">Pressure</span><span class="value"><b id="t-press">—</b><small>kPa</small></span></div>
+    <div class="tile"><span class="label">Volume · est / true</span><span class="value"><b id="t-vol">—</b><small>ml</small></span></div>
+    <div class="tile"><span class="label">Motor duty</span><span class="value"><b id="t-duty">—</b><small>%</small></span></div>
+  </section>
+
+  <section class="panel controls" aria-label="Pump controls">
+    <h2>Pump console</h2>
+    <div class="btn-row">
+      <button class="btn btn-primary" data-cmd="start">Start</button>
+      <button class="btn" data-cmd="pause">Pause</button>
+      <button class="btn" data-cmd="stop">Stop</button>
+      <button class="btn" data-cmd="clear">Clear alarm</button>
+    </div>
+    <form class="field" data-cmd-form="rate">
+      <label for="in-rate">Rate <small>0.1–999 ml/h</small></label>
+      <div class="input-row"><input id="in-rate" type="number" step="0.1" value="100" required><button class="btn">Set</button></div>
+    </form>
+    <form class="field" data-cmd-form="vtbi">
+      <label for="in-vtbi">VTBI <small>ml · 0 = no limit</small></label>
+      <div class="input-row"><input id="in-vtbi" type="number" step="0.1" min="0" value="0" required><button class="btn">Set</button></div>
+    </form>
+    <div class="toggles">
+      <label class="switch"><input type="checkbox" id="tg-ids"><span>IDS enforce <small>anomalies raise alarm</small></span></label>
+      <label class="switch"><input type="checkbox" id="tg-occl"><span>Occlusion fault <small>physical, not an attack</small></span></label>
+    </div>
+  </section>
+
+  <section class="panel charts" aria-label="Charts">
+    <div class="chart-head">
+      <h2>Flow <small>ml/h · last 60 s</small></h2>
+      <ul class="legend" id="legend-flow"></ul>
+    </div>
+    <div class="chart-wrap"><canvas id="chart-flow" role="img" aria-label="Flow over time: target, measured and true"></canvas></div>
+    <div class="chart-head">
+      <h2>Line pressure <small>kPa · last 60 s</small></h2>
+      <ul class="legend" id="legend-press"></ul>
+    </div>
+    <div class="chart-wrap"><canvas id="chart-press" role="img" aria-label="Pressure over time: measured and true, with occlusion limit"></canvas></div>
+    <div id="tooltip" class="tooltip" hidden></div>
+  </section>
+
+  <section class="panel log" aria-label="Event log">
+    <div class="panel-head">
+      <h2>Event log</h2>
+      <div class="log-tools">
+        <select id="log-level" aria-label="Minimum level">
+          <option value="DEBUG">All levels</option>
+          <option value="INFO" selected>Info and up</option>
+          <option value="WARN">Warnings and up</option>
+        </select>
+        <label class="check"><input type="checkbox" id="log-follow" checked> follow</label>
+      </div>
+    </div>
+    <div class="table-wrap" id="log-wrap">
+      <table class="log-table">
+        <thead><tr><th>t (s)</th><th>Type</th><th>Level</th><th>Module</th><th>Message</th></tr></thead>
+        <tbody id="log-body"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="panel term" aria-label="Attack terminal">
+    <div class="panel-head">
+      <h2>Attack terminal</h2>
+      <span class="hint">also: <code>node gui/inject.js</code></span>
+    </div>
+    <div class="quick" id="quick">
+      <button class="chip" data-line="attack spike">spike</button>
+      <button class="chip" data-line="attack drift">drift</button>
+      <button class="chip" data-line="attack replay">replay</button>
+      <button class="chip" data-line="attack freeze">freeze</button>
+      <button class="chip" data-line="attack dropout 3">dropout ×3</button>
+      <button class="chip" data-line="attack noise">noise</button>
+      <button class="chip" data-line="attack tamper 900">tamper 900</button>
+      <button class="chip chip-clear" data-line="attack clear">clear</button>
+    </div>
+    <div class="term-out" id="term-out" aria-live="polite"></div>
+    <form class="term-in" id="term-form" autocomplete="off">
+      <span class="prompt">inject&gt;</span>
+      <input id="term-input" spellcheck="false" aria-label="Command" placeholder="attack spike 80 10   ·   help">
+    </form>
+  </section>
+
+</main>
+
+<script src="/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,35 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "build",
+      "type": "shell",
+      "command": "cmake -S firmware -B firmware/build -G Ninja && cmake --build firmware/build",
+      "group": { "kind": "build", "isDefault": true },
+      "problemMatcher": ["$gcc"]
+    },
+    {
+      "label": "test",
+      "type": "shell",
+      "command": "ctest --test-dir firmware/build --output-on-failure && cd gui && node --test",
+      "dependsOn": "build",
+      "group": { "kind": "test", "isDefault": true },
+      "problemMatcher": []
+    },
+    {
+      "label": "gui",
+      "type": "shell",
+      "command": "node gui/server.js",
+      "dependsOn": "build",
+      "isBackground": true,
+      "problemMatcher": []
+    },
+    {
+      "label": "inject",
+      "type": "shell",
+      "command": "node gui/inject.js",
+      "presentation": { "panel": "dedicated", "focus": true },
+      "problemMatcher": []
+    }
+  ]
+}
