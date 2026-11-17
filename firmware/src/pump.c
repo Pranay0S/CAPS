@@ -175,10 +175,16 @@ void pump_step(pump_t *p)
 
     monitor_ctx_t mc = { p->state == PUMP_RUNNING, p->target_rate, p->duty };
     uint32_t flags = monitor_check(&p->mon, f_ok ? &ff : NULL, p_ok ? &pf : NULL, &mc, NULL, NULL);
-    if (f_ok)
+    if (f_ok) {
         p->flow_meas = ff.value;
-    if (p_ok)
+        p->flow_seq  = ff.seq;
+    }
+    if (p_ok) {
         p->pressure_meas = pf.value;
+        p->press_seq     = pf.seq;
+    }
+    p->flow_ok  = f_ok;
+    p->press_ok = p_ok;
     log_new_anomalies(p, flags, now);
     p->anomalies = flags;
 

@@ -240,7 +240,7 @@ async function handle(req, res) {
     return sendJson(res, 200, { ok: true, ...status() });
   }
 
-  const csv = url.pathname.match(/^\/api\/export\/(telemetry|events|all)\.csv$/);
+  const csv = url.pathname.match(/^\/api\/export\/(telemetry|labels|events|all)\.csv$/);
   if (req.method === 'GET' && csv) return serveCsv(res, csv[1]);
 
   if (req.method === 'GET') return serveStatic(req, res, url.pathname);

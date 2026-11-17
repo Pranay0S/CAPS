@@ -1,0 +1,126 @@
+{
+  "model_bytes": {
+    "int8_weights": 3024,
+    "scales": 28,
+    "float_biases": 420,
+    "total": 3472
+  },
+  "hidden": 24,
+  "threshold": 0.5,
+  "debounce": 3,
+  "test_macro_f1_int8": 0.9662791773574967,
+  "ids_rnn": {
+    "per_attack": {
+      "SPIKE": {
+        "episodes": 71,
+        "detected": 68,
+        "recall": 0.9577464788732394,
+        "median_latency_s": 0.2,
+        "type_accuracy": 1.0
+      },
+      "DRIFT": {
+        "episodes": 72,
+        "detected": 72,
+        "recall": 1.0,
+        "median_latency_s": 0.7000000000000001,
+        "type_accuracy": 1.0
+      },
+      "REPLAY": {
+        "episodes": 71,
+        "detected": 71,
+        "recall": 1.0,
+        "median_latency_s": 0.2,
+        "type_accuracy": 1.0
+      },
+      "FREEZE": {
+        "episodes": 81,
+        "detected": 81,
+        "recall": 1.0,
+        "median_latency_s": 0.2,
+        "type_accuracy": 1.0
+      },
+      "DROPOUT": {
+        "episodes": 76,
+        "detected": 75,
+        "recall": 0.9868421052631579,
+        "median_latency_s": 0.2,
+        "type_accuracy": 1.0
+      },
+      "NOISE": {
+        "episodes": 87,
+        "detected": 87,
+        "recall": 1.0,
+        "median_latency_s": 0.30000000000000004,
+        "type_accuracy": 1.0
+      },
+      "TAMPER": {
+        "episodes": 75,
+        "detected": 75,
+        "recall": 1.0,
+        "median_latency_s": 0.2,
+        "type_accuracy": 0.7333333333333333
+      }
+    },
+    "recall": 0.9924953095684803,
+    "false_alerts": 5,
+    "false_alerts_per_hour": 1.431513985096349,
+    "benign_hours": 3.4928055555555555
+  },
+  "rule_monitor": {
+    "per_attack": {
+      "SPIKE": {
+        "episodes": 71,
+        "detected": 71,
+        "recall": 1.0,
+        "median_latency_s": 0.0,
+        "type_accuracy": null
+      },
+      "DRIFT": {
+        "episodes": 72,
+        "detected": 62,
+        "recall": 0.8611111111111112,
+        "median_latency_s": 5.3500000000000005,
+        "type_accuracy": null
+      },
+      "REPLAY": {
+        "episodes": 71,
+        "detected": 71,
+        "recall": 1.0,
+        "median_latency_s": 0.0,
+        "type_accuracy": null
+      },
+      "FREEZE": {
+        "episodes": 81,
+        "detected": 81,
+        "recall": 1.0,
+        "median_latency_s": 0.7000000000000001,
+        "type_accuracy": null
+      },
+      "DROPOUT": {
+        "episodes": 76,
+        "detected": 76,
+        "recall": 1.0,
+        "median_latency_s": 0.0,
+        "type_accuracy": null
+      },
+      "NOISE": {
+        "episodes": 87,
+        "detected": 71,
+        "recall": 0.8160919540229885,
+        "median_latency_s": 0.2,
+        "type_accuracy": null
+      },
+      "TAMPER": {
+        "episodes": 75,
+        "detected": 0,
+        "recall": 0.0,
+        "median_latency_s": null,
+        "type_accuracy": null
+      }
+    },
+    "recall": 0.8105065666041276,
+    "false_alerts": 2,
+    "false_alerts_per_hour": 0.5726055940385395,
+    "benign_hours": 3.4928055555555555
+  }
+}

@@ -51,24 +51,50 @@ test('combined rows have the same column count for every record type', () => {
   }
 });
 
-test('session writes telemetry and event CSV files and exports from memory', async () => {
+test('telemetry CSV holds only pump-generated columns; ground truth goes to labels', () => {
+  const rec = P.parseLine(
+    'TLM,3100,RUNNING,NONE,100.00,160.130,99.9,30.02,10.0,0.08,0.08,0.00,0.0861,ROC_FLOW,SPIKE,31,1,31,1,NONE');
+  assert.equal(rec.flow_seq, 31);
+  assert.equal(rec.fault, 'NONE');
+
+  const tcols = P.telemetryColumns();
+  assert.deepEqual(tcols, P.PUMP_COLUMNS);
+  for (const leaked of ['attack', 'fault', 'anomaly', 'flow_true', 'pressure_true', 'volume_true', 'host_time']) {
+    assert.ok(!tcols.includes(leaked), `${leaked} must not be in telemetry`);
+  }
+  assert.equal(P.telemetryRow(rec), '3100,RUNNING,NONE,100,160.13,31,1,30.02,31,1,0.08,0,0.0861\r\n');
+  assert.equal(P.labelRow(rec), '3100,SPIKE,NONE,ROC_FLOW,99.9,10,0.08\r\n');
+});
+
+test('older simulators without the new columns still export', () => {
+  const old = P.DEFAULT_TLM_COLUMNS.slice(0, 14);
+  assert.ok(!P.telemetryColumns(old).includes('flow_seq'));
+  assert.ok(!P.labelColumns(old).includes('fault'));
+});
+
+test('session writes telemetry, labels and event CSV files and exports from memory', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ivpump-'));
   const s = new Session(dir, { seed: 1 });
   s.add(P.parseLine('LOG,0,INFO,SIM,boot'));
-  s.add(P.parseLine('TLM,100,IDLE,NONE,100,0,0,8,8,0,0,0,0,NONE,NONE'));
+  s.add(P.parseLine('TLM,100,IDLE,NONE,100,0,0,8,8,0,0,0,0,NONE,NONE,1,1,1,1,NONE'));
   s.add({ type: 'CMD', tick_ms: 100, level: 'INFO', module: 'cli', message: 'attack spike' });
   s.close();
   await new Promise((r) => setTimeout(r, 50));
 
   const tlm = fs.readFileSync(s.telemetryPath, 'utf8').trim().split('\r\n');
-  assert.equal(tlm[0], 'host_time,' + P.DEFAULT_TLM_COLUMNS.join(','));
+  assert.equal(tlm[0], P.PUMP_COLUMNS.join(','));
   assert.equal(tlm.length, 2);
+
+  const lbl = fs.readFileSync(s.labelsPath, 'utf8').trim().split('\r\n');
+  assert.equal(lbl[0], P.LABEL_COLUMNS.join(','));
+  assert.equal(lbl[1], '100,NONE,NONE,NONE,0,8,0');
 
   const evt = fs.readFileSync(s.eventsPath, 'utf8').trim().split('\r\n');
   assert.equal(evt[0], P.EVENT_COLUMNS.join(','));
   assert.equal(evt.length, 3);
   assert.match(evt[2], /,CMD,INFO,cli,attack spike$/);
 
+  assert.deepEqual([...s.csv('labels')].join('').trim().split('\r\n'), lbl);
   const all = [...s.csv('all')].join('').trim().split('\r\n');
   assert.equal(all.length, 4);
   assert.match(all[1], /,LOG,/);

@@ -19,7 +19,8 @@
   <div class="topbar-actions">
     <span id="conn" class="pill pill-muted"><span class="dot"></span><span>connecting</span></span>
     <div class="btn-group" role="group" aria-label="Export CSV">
-      <a class="btn" href="/api/export/telemetry.csv" download>Telemetry CSV</a>
+      <a class="btn" href="/api/export/telemetry.csv" download title="Pump-generated data only">Telemetry CSV</a>
+      <a class="btn" href="/api/export/labels.csv" download title="Ground truth: attack, fault, true plant state, rule-IDS flags">Labels CSV</a>
       <a class="btn" href="/api/export/events.csv" download>Events CSV</a>
       <a class="btn" href="/api/export/all.csv" download>All logs CSV</a>
     </div>

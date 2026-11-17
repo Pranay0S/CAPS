@@ -10,3 +10,9 @@ node_modules/
 # legacy python artefacts
 __pycache__/
 *.pyc
+
+# ML datasets (regenerate with ml/gen_dataset.py)
+ml/data/
+
+# ARM (STM32) build output
+firmware/build-mcu/

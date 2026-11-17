@@ -64,12 +64,14 @@ static void emit_telemetry(sim_t *s)
     char anom[64], line[LOG_LINE_MAX];
     monitor_flags_str(p->anomalies, anom, sizeof anom);
     snprintf(line, sizeof line,
-             "TLM,%lu,%s,%s,%.2f,%.3f,%.3f,%.3f,%.3f,%.4f,%.4f,%.2f,%.4f,%s,%s",
+             "TLM,%lu,%s,%s,%.2f,%.3f,%.3f,%.3f,%.3f,%.4f,%.4f,%.2f,%.4f,%s,%s,%u,%d,%u,%d,%s",
              (unsigned long)s->millis, pump_state_name(p->state), pump_alarm_name(p->alarm),
              (double)p->target_rate, (double)p->flow_meas, (double)s->plant.flow,
              (double)p->pressure_meas, (double)s->plant.pressure,
              (double)p->volume_est, (double)s->plant.volume, (double)p->vtbi,
-             (double)p->duty, anom, attack_name(s->attack.type));
+             (double)p->duty, anom, attack_name(s->frame_attack),
+             (unsigned)p->flow_seq, p->flow_ok ? 1 : 0, (unsigned)p->press_seq, p->press_ok ? 1 : 0,
+             s->plant.occl_fault ? "OCCLUSION" : "NONE");
     logger_raw(&s->log, line);
 }
 
@@ -120,6 +122,9 @@ void sim_tick(sim_t *s)
 
     plant_sample(&s->plant, &s->bus_flow, &s->bus_press);
     s->bus_flow_ok = s->bus_press_ok = true;
+    /* Label with the attack that touches these frames: attack_apply may end a
+     * finite attack while applying its last sample. */
+    s->frame_attack = s->attack.type;
     attack_apply(&s->attack, &s->bus_flow, &s->bus_flow_ok, &s->bus_press, &s->bus_press_ok);
     note_attack_transition(s);
 

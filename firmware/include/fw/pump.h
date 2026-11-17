@@ -67,6 +67,11 @@ typedef struct {
     float         flow_meas;     /* last accepted readings */
     float         pressure_meas;
 
+    /* Raw sensor-bus view of the most recent step: frame counters of the
+     * last frames received and whether each read succeeded this period. */
+    uint16_t      flow_seq, press_seq;
+    bool          flow_ok, press_ok;
+
     uint32_t      last_ms;
     bool          have_last_ms;
     uint8_t       missed_reads;

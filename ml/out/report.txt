@@ -1,0 +1,82 @@
+data: 240 train / 30 val / 60 test recordings, 720000 training samples, 15 features
+class weights: NONE=0.54, OCCLUSION=2.64, SPIKE=6.65, DRIFT=1.73, REPLAY=1.66, FREEZE=2.23, DROPOUT=4.96, NOISE=2.16, TAMPER=11.16
+GRU: 15 in -> 24 hidden -> 9 classes, 3129 parameters
+[fp32] epoch   1/30  loss 0.5653  val macro-F1 0.9203  lr 4.00e-03  3.8s
+[fp32] epoch   2/30  loss 0.1104  val macro-F1 0.9404  lr 3.99e-03  3.8s
+[fp32] epoch   3/30  loss 0.0734  val macro-F1 0.9455  lr 3.96e-03  3.4s
+[fp32] epoch   4/30  loss 0.0607  val macro-F1 0.9389  lr 3.90e-03  4.0s
+[fp32] epoch   5/30  loss 0.0508  val macro-F1 0.9474  lr 3.83e-03  3.6s
+[fp32] epoch   6/30  loss 0.0489  val macro-F1 0.9368  lr 3.73e-03  3.8s
+[fp32] epoch   7/30  loss 0.0431  val macro-F1 0.9574  lr 3.62e-03  4.0s
+[fp32] epoch   8/30  loss 0.0410  val macro-F1 0.9627  lr 3.49e-03  3.4s
+[fp32] epoch   9/30  loss 0.0389  val macro-F1 0.9606  lr 3.34e-03  3.9s
+[fp32] epoch  10/30  loss 0.0369  val macro-F1 0.9687  lr 3.18e-03  3.2s
+[fp32] epoch  11/30  loss 0.0361  val macro-F1 0.9626  lr 3.00e-03  3.2s
+[fp32] epoch  12/30  loss 0.0351  val macro-F1 0.9690  lr 2.81e-03  3.2s
+[fp32] epoch  13/30  loss 0.0333  val macro-F1 0.9676  lr 2.62e-03  3.0s
+[fp32] epoch  14/30  loss 0.0337  val macro-F1 0.9598  lr 2.42e-03  2.9s
+[fp32] epoch  15/30  loss 0.0326  val macro-F1 0.9684  lr 2.21e-03  3.0s
+[fp32] epoch  16/30  loss 0.0331  val macro-F1 0.9742  lr 2.00e-03  3.0s
+[fp32] epoch  17/30  loss 0.0314  val macro-F1 0.9650  lr 1.79e-03  3.1s
+[fp32] epoch  18/30  loss 0.0309  val macro-F1 0.9713  lr 1.58e-03  3.1s
+[fp32] epoch  19/30  loss 0.0305  val macro-F1 0.9681  lr 1.38e-03  2.9s
+[fp32] epoch  20/30  loss 0.0299  val macro-F1 0.9656  lr 1.19e-03  3.3s
+[fp32] epoch  21/30  loss 0.0294  val macro-F1 0.9661  lr 1.00e-03  2.8s
+[fp32] epoch  22/30  loss 0.0290  val macro-F1 0.9661  lr 8.24e-04  2.9s
+[fp32] epoch  23/30  loss 0.0290  val macro-F1 0.9722  lr 6.62e-04  2.9s
+[fp32] epoch  24/30  loss 0.0286  val macro-F1 0.9707  lr 5.14e-04  2.9s
+[fp32] epoch  25/30  loss 0.0283  val macro-F1 0.9654  lr 3.82e-04  2.9s
+[fp32] epoch  26/30  loss 0.0281  val macro-F1 0.9667  lr 2.68e-04  3.0s
+[fp32] epoch  27/30  loss 0.0278  val macro-F1 0.9685  lr 1.73e-04  2.9s
+[fp32] epoch  28/30  loss 0.0278  val macro-F1 0.9671  lr 9.79e-05  3.1s
+[fp32] epoch  29/30  loss 0.0276  val macro-F1 0.9676  lr 4.37e-05  3.0s
+[fp32] epoch  30/30  loss 0.0275  val macro-F1 0.9676  lr 1.10e-05  3.0s
+[qat] epoch   1/8  loss 0.0316  val macro-F1 0.9657  lr 1.00e-03  3.1s
+[qat] epoch   2/8  loss 0.0304  val macro-F1 0.9658  lr 9.62e-04  3.1s
+[qat] epoch   3/8  loss 0.0303  val macro-F1 0.9644  lr 8.54e-04  3.2s
+[qat] epoch   4/8  loss 0.0296  val macro-F1 0.9664  lr 6.91e-04  3.2s
+[qat] epoch   5/8  loss 0.0289  val macro-F1 0.9641  lr 5.00e-04  3.2s
+[qat] epoch   6/8  loss 0.0287  val macro-F1 0.9672  lr 3.09e-04  3.0s
+[qat] epoch   7/8  loss 0.0283  val macro-F1 0.9671  lr 1.46e-04  3.0s
+[qat] epoch   8/8  loss 0.0282  val macro-F1 0.9671  lr 3.81e-05  3.0s
+
+model flash: 3472 B  (int8 weights 3024 B + scales 28 B + float biases 420 B)   budget 6144 B -> OK
+RAM at run time: persistent state 176 B (sizeof(ids_rnn_t): features 28 + hidden 96 + probabilities 36 + flags 16); stack arrays per step 672 B (x, two 3H gate buffers, logits)
+alert rule: P(attack) > 0.50 for 3 consecutive periods (threshold chosen on val, <= 1.0/h false alerts)
+
+per-sample macro-F1 (test): int8 0.9663   fp32 0.9661
+per-sample confusion (rows = truth, row-normalised):
+                NONE OCCLUSIO    SPIKE    DRIFT   REPLAY   FREEZE  DROPOUT    NOISE   TAMPER
+  NONE         0.996    0.000    0.000    0.000    0.000    0.000    0.000    0.002    0.002
+  OCCLUSIO     0.001    0.999    0.000    0.000    0.000    0.000    0.000    0.000    0.000
+  SPIKE        0.000    0.000    1.000    0.000    0.000    0.000    0.000    0.000    0.000
+  DRIFT        0.036    0.000    0.000    0.964    0.000    0.000    0.000    0.000    0.000
+  REPLAY       0.000    0.000    0.000    0.000    0.999    0.000    0.000    0.000    0.000
+  FREEZE       0.000    0.000    0.000    0.000    0.000    1.000    0.000    0.000    0.000
+  DROPOUT      0.000    0.000    0.000    0.000    0.000    0.000    1.000    0.000    0.000
+  NOISE        0.011    0.000    0.001    0.002    0.000    0.000    0.000    0.985    0.000
+  TAMPER       0.012    0.000    0.000    0.000    0.000    0.000    0.000    0.000    0.988
+
+IDS-RNN int8, event level (test):
+  attack   episodes detected  recall  latency type-acc
+  SPIKE          71       68   0.958     0.2s    1.000
+  DRIFT          72       72   1.000     0.7s    1.000
+  REPLAY         71       71   1.000     0.2s    1.000
+  FREEZE         81       81   1.000     0.2s    1.000
+  DROPOUT        76       75   0.987     0.2s    1.000
+  NOISE          87       87   1.000     0.3s    1.000
+  TAMPER         75       75   1.000     0.2s    0.733
+  overall recall 0.992   false alerts 5 (1.43/h over 3.5 h attack-free)
+
+Baseline: rule-based monitor (anomaly != NONE), event level (test):
+  attack   episodes detected  recall  latency type-acc
+  SPIKE          71       71   1.000     0.0s        -
+  DRIFT          72       62   0.861     5.4s        -
+  REPLAY         71       71   1.000     0.0s        -
+  FREEZE         81       81   1.000     0.7s        -
+  DROPOUT        76       76   1.000     0.0s        -
+  NOISE          87       71   0.816     0.2s        -
+  TAMPER         75        0   0.000        -        -
+  overall recall 0.811   false alerts 2 (0.57/h over 3.5 h attack-free)
+
+saved C:\Users\sriva\Documents\CAPS_ESE534\CAPS\ml\out\ids_gru.npz

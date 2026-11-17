@@ -5,7 +5,12 @@
  *
  * Output (one record per line, via the logger sink):
  *   TLM,tick_ms,state,alarm,target_rate,flow_meas,flow_true,pressure_meas,
- *       pressure_true,volume_est,volume_true,vtbi,duty,anomaly,attack
+ *       pressure_true,volume_est,volume_true,vtbi,duty,anomaly,attack,
+ *       flow_seq,flow_ok,pressure_seq,pressure_ok,fault
+ *
+ *   The TLM line mixes what the pump firmware produces with harness ground
+ *   truth (*_true, attack, fault) so the GUI can show both. Consumers that
+ *   build datasets must keep them apart (see gui/lib/protocol.js).
  *   LOG,tick_ms,LEVEL,MODULE,message
  *   ACK,tick_ms,verb,message      ERR,tick_ms,verb,message
  *
@@ -32,7 +37,7 @@ extern "C" {
 
 #define SIM_TLM_HEADER \
     "tick_ms,state,alarm,target_rate,flow_meas,flow_true,pressure_meas,pressure_true," \
-    "volume_est,volume_true,vtbi,duty,anomaly,attack"
+    "volume_est,volume_true,vtbi,duty,anomaly,attack,"     "flow_seq,flow_ok,pressure_seq,pressure_ok,fault"
 
 typedef struct {
     uint32_t    period_ms;
@@ -58,6 +63,7 @@ typedef struct {
     float          motor_duty;
     bool           alarm_output;
     attack_type_t  prev_attack;
+    attack_type_t  frame_attack;  /* attack applied to this period's frames (label) */
     bool           quit;
 } sim_t;
 

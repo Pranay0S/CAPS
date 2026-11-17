@@ -26,8 +26,11 @@ class Session {
 
     fs.mkdirSync(logDir, { recursive: true });
     this.telemetryPath = path.join(logDir, `session_${this.id}_telemetry.csv`);
+    this.labelsPath = path.join(logDir, `session_${this.id}_labels.csv`);
     this.eventsPath = path.join(logDir, `session_${this.id}_events.csv`);
-    this.tlmOut = null; // opened lazily so a late #TLM header can set columns
+    // opened lazily so a late #TLM header can set columns
+    this.tlmOut = null; // pump-only telemetry
+    this.lblOut = null; // ground-truth labels, row-aligned with telemetry
     this.evtOut = fs.createWriteStream(this.eventsPath);
     this.evtOut.write(P.csvRow(P.EVENT_COLUMNS));
   }
@@ -46,8 +49,11 @@ class Session {
       if (!this.tlmOut) {
         this.tlmOut = fs.createWriteStream(this.telemetryPath);
         this.tlmOut.write(P.csvRow(P.telemetryColumns(this.tlmColumns)));
+        this.lblOut = fs.createWriteStream(this.labelsPath);
+        this.lblOut.write(P.csvRow(P.labelColumns(this.tlmColumns)));
       }
       this.tlmOut.write(P.telemetryRow(rec, this.tlmColumns));
+      this.lblOut.write(P.labelRow(rec, this.tlmColumns));
     } else {
       this.evtOut.write(P.eventRow(rec));
     }
@@ -63,12 +69,15 @@ class Session {
     return out.reverse();
   }
 
-  /** Yields CSV chunks for kind = telemetry | events | all. */
+  /** Yields CSV chunks for kind = telemetry | labels | events | all. */
   *csv(kind) {
     const cols = this.tlmColumns;
     if (kind === 'telemetry') {
       yield P.csvRow(P.telemetryColumns(cols));
       for (const r of this.records) if (r.type === 'TLM') yield P.telemetryRow(r, cols);
+    } else if (kind === 'labels') {
+      yield P.csvRow(P.labelColumns(cols));
+      for (const r of this.records) if (r.type === 'TLM') yield P.labelRow(r, cols);
     } else if (kind === 'events') {
       yield P.csvRow(P.EVENT_COLUMNS);
       for (const r of this.records) if (r.type !== 'TLM') yield P.eventRow(r);
@@ -80,6 +89,7 @@ class Session {
 
   close() {
     this.tlmOut?.end();
+    this.lblOut?.end();
     this.evtOut.end();
   }
 
@@ -89,7 +99,7 @@ class Session {
       startedAt: this.startedAt,
       records: this.records.length,
       truncated: this.truncated,
-      files: [this.telemetryPath, this.eventsPath].map((p) => path.basename(p)),
+      files: [this.telemetryPath, this.labelsPath, this.eventsPath].map((p) => path.basename(p)),
       ...this.meta,
     };
   }

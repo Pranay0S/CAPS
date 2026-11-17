@@ -82,7 +82,7 @@ duty = target / 1200            (feed-forward from the nominal motor model)
      + Ki · ∫(target − flow_meas) dt   (clamped anti-windup)
 ```
 
-On a missed sensor read the last duty is held. Volume is integrated from **measured** flow, so a spoofed sensor makes the pump's own volume estimate wrong too. The telemetry shows `volume_est` next to `volume_true` for that reason.
+On a missed sensor read the last duty is held. Volume is integrated from **measured** flow, so a spoofed sensor makes the pump's own volume estimate wrong too. The GUI shows `volume_est` next to `volume_true` for that reason (the latter is in the labels CSV).
 
 ### 3.4 Safety alarms
 
@@ -113,7 +113,7 @@ New flags are logged as `WARN` (`MON` module) on their rising edge.
 
 ### 3.6 Logger (`logger.c`)
 
-- A fixed RAM ring of 64 × 192-byte lines. No `malloc`, no blocking.
+- A fixed RAM ring of 64 × 256-byte lines. No `malloc`, no blocking.
 - `logger_event()` formats `LOG,<tick>,<LEVEL>,<MODULE>,<msg>`. Commas in text are replaced with `;` so every record is exactly one CSV row.
 - `logger_flush()` drains the ring to a sink, as a UART TX task would. On overflow, lines are dropped and a `ring overflow: N lines dropped` warning is emitted on the next flush.
 
@@ -170,7 +170,7 @@ Each tick runs `plant_step → plant_sample → attack_apply → pump_step → e
 ## 6. GUI and recording (`gui/`)
 
 - `server.js` uses only Node built-ins. It spawns `ivpump_sim`, streams parsed records to browsers over Server-Sent Events, forwards `POST /api/cmd` to the sim's stdin, and records every record, including the commands themselves (`CMD`, tagged `gui` or `cli`).
-- CSV export endpoints: `/api/export/telemetry.csv`, `/api/export/events.csv`, `/api/export/all.csv`. Files are also appended live under `logs/`.
+- CSV export endpoints: `/api/export/telemetry.csv` (pump-generated columns only), `/api/export/labels.csv` (ground truth), `/api/export/events.csv`, `/api/export/all.csv`. Files are also appended live under `logs/`.
 - `inject.js` is the secondary terminal. It uses the same HTTP API, subscribes to the same event stream, and prints ACK/ERR and warnings as they happen.
 
 ---
@@ -178,5 +178,5 @@ Each tick runs `plant_step → plant_sample → attack_apply → pump_step → e
 ## 7. Extending
 
 - **New attack:** add an `attack_type_t` value, a name, defaults, and a `case` in `attack_apply()`, plus an `AttackTest` and a `SimTest` showing whether the monitor catches it.
-- **New detector:** add an `ANOM_*` bit and a rule in `monitor_check()`. It appears automatically in the `anomaly` CSV column.
-- **ML model in the loop:** the telemetry CSV is the training set (`attack` as label). An on-device model could replace or augment `monitor_check()` behind the same interface.
+- **New detector:** add an `ANOM_*` bit and a rule in `monitor_check()`. It appears automatically in the `anomaly` column of the labels CSV.
+- **ML model in the loop:** `ml/` trains an int8 GRU on the telemetry CSV (labels CSV as targets) and exports it to `fw/ids_rnn.h`. Wiring its `alert` into `pump_step()` (fail safe, or fall back to open-loop control) is the next step; see `ml/README.md`.

@@ -36,7 +36,7 @@
 #define MON_MISMATCH_SAMPLES     15        /* persistence before flagging */
 
 /* ---- Logger ----------------------------------------------------------- */
-#define LOG_LINE_MAX             192
+#define LOG_LINE_MAX             256
 #define LOG_RING_LINES           64
 
 #endif /* FW_CONFIG_H */

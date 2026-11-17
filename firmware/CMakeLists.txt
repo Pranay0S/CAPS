@@ -23,6 +23,7 @@ add_library(ivpump_fw STATIC
   src/monitor.c
   src/pump.c
   src/cmd.c
+  src/ids_rnn.c      # int8 GRU attack detector; weights in include/fw/ids_model.h (ml/export_c.py)
 )
 target_include_directories(ivpump_fw PUBLIC include)
 target_compile_options(ivpump_fw PRIVATE ${IVPUMP_WARNINGS})
@@ -71,6 +72,7 @@ if(IVPUMP_BUILD_TESTS)
     tests/test_cmd.cpp
     tests/test_attack.cpp
     tests/test_sim.cpp
+    tests/test_ids_rnn.cpp
   )
   target_include_directories(ivpump_tests PRIVATE tests)
   target_link_libraries(ivpump_tests PRIVATE ivpump_simlib GTest::gmock_main)

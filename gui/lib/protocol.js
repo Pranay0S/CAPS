@@ -10,10 +10,27 @@
 const DEFAULT_TLM_COLUMNS = [
   'tick_ms', 'state', 'alarm', 'target_rate', 'flow_meas', 'flow_true',
   'pressure_meas', 'pressure_true', 'volume_est', 'volume_true', 'vtbi',
-  'duty', 'anomaly', 'attack',
+  'duty', 'anomaly', 'attack', 'flow_seq', 'flow_ok', 'pressure_seq',
+  'pressure_ok', 'fault',
 ];
 
-const TEXT_TLM_FIELDS = new Set(['state', 'alarm', 'anomaly', 'attack']);
+const TEXT_TLM_FIELDS = new Set(['state', 'alarm', 'anomaly', 'attack', 'fault']);
+
+// The TLM stream mixes two kinds of data. They are written to separate CSVs so
+// the telemetry file is exactly what the pump itself could log on the device.
+//
+// PUMP_COLUMNS: produced or observed by the firmware (sensor frames as
+// received, actuator command, state machine). Model inputs come only from here.
+const PUMP_COLUMNS = [
+  'tick_ms', 'state', 'alarm', 'target_rate', 'flow_meas', 'flow_seq', 'flow_ok',
+  'pressure_meas', 'pressure_seq', 'pressure_ok', 'volume_est', 'vtbi', 'duty',
+];
+// LABEL_COLUMNS: harness ground truth (attack, fault, plant state the pump
+// cannot see) plus the rule-based monitor's flags as a baseline detector.
+// Training/evaluation targets only, never model inputs.
+const LABEL_COLUMNS = [
+  'tick_ms', 'attack', 'fault', 'anomaly', 'flow_true', 'pressure_true', 'volume_true',
+];
 
 const EVENT_COLUMNS = ['host_time', 'tick_ms', 'type', 'level', 'module', 'message'];
 
@@ -76,19 +93,30 @@ function csvRow(values) {
   return values.map(csvField).join(',') + '\r\n';
 }
 
+/** Pump-only columns present in this stream, in PUMP_COLUMNS order. */
 function telemetryColumns(tlmColumns = DEFAULT_TLM_COLUMNS) {
-  return ['host_time', ...tlmColumns];
+  return PUMP_COLUMNS.filter((c) => tlmColumns.includes(c));
 }
 
 function telemetryRow(rec, tlmColumns = DEFAULT_TLM_COLUMNS) {
-  return csvRow([rec.host_time, ...tlmColumns.map((c) => rec[c])]);
+  return csvRow(telemetryColumns(tlmColumns).map((c) => rec[c]));
+}
+
+/** Ground-truth label columns present in this stream. */
+function labelColumns(tlmColumns = DEFAULT_TLM_COLUMNS) {
+  return LABEL_COLUMNS.filter((c) => tlmColumns.includes(c));
+}
+
+function labelRow(rec, tlmColumns = DEFAULT_TLM_COLUMNS) {
+  return csvRow(labelColumns(tlmColumns).map((c) => rec[c]));
 }
 
 function eventRow(rec) {
   return csvRow(EVENT_COLUMNS.map((c) => rec[c]));
 }
 
-/** One CSV holding every record type, ordered as received. */
+/** One CSV holding every record type, ordered as received. This is a debug
+ *  dump: it includes ground truth, so don't train on it. */
 function combinedColumns(tlmColumns = DEFAULT_TLM_COLUMNS) {
   return ['host_time', 'record_type', ...tlmColumns, 'level', 'module', 'message'];
 }
@@ -103,12 +131,16 @@ function combinedRow(rec, tlmColumns = DEFAULT_TLM_COLUMNS) {
 
 module.exports = {
   DEFAULT_TLM_COLUMNS,
+  PUMP_COLUMNS,
+  LABEL_COLUMNS,
   EVENT_COLUMNS,
   parseLine,
   csvField,
   csvRow,
   telemetryColumns,
   telemetryRow,
+  labelColumns,
+  labelRow,
   eventRow,
   combinedColumns,
   combinedRow,
